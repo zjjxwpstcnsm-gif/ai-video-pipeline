@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
-ALLOWED = frozenset('''README.md pyproject.toml .gitignore
+ALLOWED = frozenset('''README.md AGENTS.md docs/AGENT_SYSTEM_INSTRUCTIONS.md pyproject.toml .gitignore
 .github/workflows/ci.yml .github/workflows/private-check.yml
 scripts/public_boundary.py scripts/private_check.py scripts/concat_video.py
 src/ai_video/__init__.py src/ai_video/metadata.py
