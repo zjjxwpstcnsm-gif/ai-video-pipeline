@@ -1,6 +1,9 @@
 name: Check private metadata syntax
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/private-check.yml]
 permissions:
   contents: read
 concurrency:
@@ -36,3 +39,35 @@ jobs:
             exit 1
           fi
           "$RUNNER_TEMP/private-check-venv/bin/python" scripts/private_check.py
+      - name: Verify private checkpoint write access
+        env:
+          ASSETS_REPOSITORY: ${{ secrets.ASSETS_REPOSITORY }}
+          ASSETS_PAT: ${{ secrets.ASSETS_PAT }}
+        run: |
+          python3 - <<'PY'
+          import os, json, base64, urllib.request, urllib.error
+          repo = os.environ["ASSETS_REPOSITORY"]
+          token = os.environ["ASSETS_PAT"]
+          headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"}
+          def request(method, path, data=None):
+              body = None if data is None else json.dumps(data).encode()
+              req = urllib.request.Request("https://api.github.com/repos/" + repo + path, data=body, headers=headers, method=method)
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)
+          try:
+              info = request("GET", "")
+              if info.get("private") is not True:
+                  print("CHECKPOINT_WRITE: refused_nonprivate")
+                  raise SystemExit(1)
+              run = os.environ["GITHUB_RUN_ID"]
+              content = base64.b64encode(json.dumps({"kind":"storage-readiness", "generation_submitted":False}).encode()).decode()
+              request("PUT", "/contents/.production-state/readiness-" + run + ".json",
+                      {"message":"chore: verify private production checkpoint storage", "content":content, "branch":info["default_branch"]})
+              print("CHECKPOINT_WRITE: verified")
+          except urllib.error.HTTPError as error:
+              print("CHECKPOINT_WRITE: blocked HTTP_" + str(error.code))
+              raise SystemExit(1)
+          except Exception:
+              print("CHECKPOINT_WRITE: transport_or_configuration_error")
+              raise SystemExit(1)
+          PY
