@@ -4,18 +4,38 @@
 
 ## 当前能力与迁移边界
 
-本次是**首批工具和公开 Actions 上线，不是完整生产迁移完成**。
+**配置连通已验证：私有仓库读取与 Agnes 只读鉴权均已通过 Actions 实测。完整视频生产迁移尚未完成。**
+
+不要以本地容器缺少 `AGNES_API_KEY` 推断 GitHub Actions 未配置密钥；两个运行环境相互独立。当前验证范围、运行证据与后续入口见下文。
 
 | 已提供 | 尚未迁移／尚未验收 |
 | --- | --- |
 | 通用 Shot / YAML 读取、连续性字段检查 | 原有完整项目验证规则、角色解析、MV 与合成引擎 |
 | 本地 FFmpeg 无损拼接 | 图像／视频 Provider、提交、轮询、人工审核与续作 |
 | 公开 CI、合成数据测试、真实 FFmpeg 冒烟测试 | 私有成品／检查点存储与恢复 |
-| 仅所有者手动触发的私有 YAML/JSON 语法检查 | 跨仓库检查实际通过（需要账号侧 Secret） |
+| 仅所有者手动触发的私有 YAML/JSON 语法检查，跨仓读取已实测通过 | 完整项目规则与媒体内容验收 |
+| Actions 中三个 Secret 可用、Agnes 模型目录鉴权已实测通过 | 图像／视频生成端点、额度、生成结果与成片验收 |
 
 旧私有仓库仍是生产与素材的权威来源，旧代码和工作流保留，不删除、不停用、不改公开。
 本项目的 `ai_video.metadata` 是新增的有限语法检查器，**不等价于旧 `validate_project.py --all --metadata-only`**；不会验证全部生产约束、图片/音频内容或生成效果。
 不要把普通 CI 绿色当作私有生产流程已经验收。
+
+## 已验证状态与证据（2026-09-27）
+
+以下结论来自实际 Actions job、步骤结果与脱敏日志，不是仅根据设置页面或普通 CI 推断。
+
+| 检查项 | 实测结果 | 范围 |
+| --- | --- | --- |
+| `ASSETS_REPOSITORY`、`ASSETS_PAT`、`AGNES_API_KEY` | 均为 available | 验证任务能够取得三个 Secret，未输出其值 |
+| 跨仓读取 | 私有元数据语法检查成功 | 检查目标仍为 private，读取 YAML/JSON 并运行公开检查器 |
+| Agnes 只读鉴权 | 无效凭证 HTTP 401；配置密钥 HTTP 200；`AGNES_AUTH_RESULT: verified` | 仅 GET `/v1/models`，没有提交图像或视频生成 |
+| 公开 CI | success | 公开边界、离线测试及合成媒体 FFmpeg 冒烟测试 |
+
+- [配置、跨仓读取与 Agnes 鉴权验证](https://github.com/zjjxwpstcnsm-gif/ai-video-pipeline/actions/runs/36299930846)，验证源码：`f9143a29157f8ec8ebbc18f862cc511ce40d760e`，job：`108565585776`。
+- [恢复手动检查后的公开 CI](https://github.com/zjjxwpstcnsm-gif/ai-video-pipeline/actions/runs/36299994027)，源码：`295d3f86c37662594f358eb53975795d6d0e4fe7`。
+
+这是上述运行时点的验证记录，不保证凭证未来不会过期或被撤销，也不证明 Environment 分支／审批保护的全部管理员设置已经审计。
+一次性验证曾使用受限的 push 触发；验证后已恢复为仅 `workflow_dispatch`。当前 `private-check.yml` 只执行私有元数据检查，不再包含一次性 Secret 可用性与 Agnes 鉴权探测。因此，重新运行当前检查不会再次验证 Agnes。
 
 ## 本地使用
 
@@ -39,20 +59,29 @@ Shot/YAML 读取工具兼容首批原接口，仅用于本地可信配置。媒�
 
 `Check private metadata syntax` 只允许仓库所有者从默认分支手动触发及重跑。它先确认数据仓库仍 private，再通过临时只读凭证 sparse checkout YAML/JSON。只运行已安装的公开检查器，不执行私有 Python、Shell、工作流或安装脚本，不打印私有文件名、配置内容和详细异常，不上传 Artifact、不共享缓存、不回写素材仓库。
 
-### 首次配置
+### 首次配置与已有配置复用
 
 在本仓库 Settings → Environments 创建 `private-assets`，限制仅默认分支部署，并设置可用的审批保护。工作流中的 owner / default-branch 检查已经提交；Environment 保护需要仓库管理员实际设置，不能只写在文档里。
 
-在该 Environment 添加两个 **Secrets**：
+本仓库已有上述成功验证记录；继续使用时先核对运行证据，无需因本地缺少变量而重复索取密钥。新部署时在该 Environment 配置：
 
 | 名称 | 值 |
 | --- | --- |
 | `ASSETS_REPOSITORY` | 你的私有数据仓库，格式为 `owner/repository` |
 | `ASSETS_PAT` | Fine-grained PAT：只选该私有仓库，Contents: Read-only，设置到期日 |
+| `AGNES_API_KEY` | Agnes 服务凭证；已用于一次性只读鉴权验证，当前元数据检查不引用它 |
 
 不要把 PAT 发到聊天、写进代码、workflow 输入或公开 Issue。公开仓库的默认 GITHUB_TOKEN 不负责跨私有仓库授权。
 配置完成后，Actions → **Check private metadata syntax** → **Run workflow**，选择 main。
 没有 Secret 时会明确失败，不会退回匿名访问、不扩大权限，也不会调用真实生成服务。
+
+### Agent 接续与视频执行入口
+
+1. 先读取默认分支工作流和最近的对应 Actions job，分别判断 Secret 可用、跨仓访问、服务鉴权、生成成功和最终成片验收；不要把它们合并成一个“已通／未通”。
+2. GitHub Environment secrets 只提供给获授权且显式引用它们的 Actions job，不会自动注入聊天工具或本地容器。不要要求用户把密钥贴到聊天，也不要尝试导出密钥供本地运行。
+3. 当前公开仓库只有 `Public pipeline CI` 与 `Check private metadata syntax` 两个工作流，没有“生成视频”入口；配置凭证不会自动增加 Provider、轮询或剪辑能力。
+4. 制作任务应继续检查旧私有仓库中现有的生产入口及可执行性；若要迁移到公开 Actions，先接入经过审查的通用生成代码、任务 ID 续查、私有输入与私有结果存储，再实际完成一次生成与成片验收。不能仅修改 README 宣称生产已完成。
+5. 后续生成任务通过对应 job 的环境变量引用 `AGNES_API_KEY`。不得把私有提示词、素材路径、临时素材 URL、API 响应正文或产物放进公开日志、公共 Artifact 或公开仓库。
 
 ### 生产切换条件
 
