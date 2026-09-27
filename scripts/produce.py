@@ -271,10 +271,20 @@ def main():
     item = call('GET', store.base + '/contents/production-requests/' + rid + '.json?ref=' + urllib.parse.quote(store.branch, safe=''), os.environ['ASSETS_PAT'])
     config = json.loads(base64.b64decode(item['content']))
     stage = config['stage']
-    if stage not in ('preflight', 'images', 'videos', 'refresh'):
+    if stage not in ('preflight', 'images', 'videos', 'refresh', 'reconcile'):
         raise Stop('INVALID_STAGE')
     call('GET', API + '/v1/models', os.environ['AGNES_API_KEY'])
     print('PROVIDER_AUTH: verified', flush=True)
+    if stage == 'reconcile':
+        try:
+            history = call('GET', API + '/v1/videos?limit=100', os.environ['AGNES_API_KEY'])
+            store.state['reconciliation'] = {'status': 'history_received', 'response': history}
+            print('RECONCILIATION: history_received', flush=True)
+        except Stop as error:
+            store.state['reconciliation'] = {'status': 'history_unavailable', 'code': str(error)}
+            print('RECONCILIATION: ' + str(error), flush=True)
+        store.save()
+        return
     for shot in config['shots']:
         if shot['id'] not in config.get('selected_shots', []):
             continue
