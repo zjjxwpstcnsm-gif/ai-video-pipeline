@@ -1,5 +1,19 @@
 # AI Video Pipeline
 
+## 当前生产接续（2026-09-27）
+
+已接入 `Produce private media`（`.github/workflows/produce.yml`）与通用 `scripts/produce.py`。它读取公开 `requests/current.txt` 中的稳定任务 ID 和可选调用 ID（均为无敏感含义的 32 位十六进制串），在私有仓库默认分支解析对应 JSON 请求。公开触发文件不包含创作内容。
+
+- Environment 沿用 `private-assets`；`ASSETS_PAT` 保持只读，新增 `RESULTS_PAT` 仅授权目标私有仓库 Contents 读写。
+- 私有 JSON 检查点逐阶段持久化，生成前验证写入和读回。一次性媒体保存到该私有仓库的 draft Release，不写入源码 Git，不使用公共 Artifact。
+- 仅可信 main、仓库所有者和获保护的 Environment 可执行；私有输入不作为代码运行。公开日志仅输出安全状态码。
+- 已实际通过私有检查点写入读回、私有媒体上传下载、服务鉴权和一张关键帧生成回收：[运行证据](https://github.com/zjjxwpstcnsm-gif/ai-video-pipeline/actions/runs/36303164399)。
+- 视频试制提交返回 HTTP 503，未取得任务 ID：[失败运行](https://github.com/zjjxwpstcnsm-gif/ai-video-pipeline/actions/runs/36303296481)。只读任务列表探测返回 HTTP 404：[对账运行](https://github.com/zjjxwpstcnsm-gif/ai-video-pipeline/actions/runs/36303404046)。不能据此断言未受理，禁止自动重投；应先在提供方任务记录核对。
+- 当前没有已验收的视频片段或最终成片。剪辑与视觉验收尚未完成；该通用入口也不等于旧完整引擎已经迁移。
+- 接续时先读私有请求与 `.production-state/` 检查点。已完成图片直接回收；`submitting` / `outcome_unknown` 且无任务 ID 的记录必须先对账。
+
+下文的“两工作流、只读检查”描述为此前迁移基线；最新生产入口与实测边界以上述状态及实际源码为准。
+
 公开的通用视频工具与私有数据检查入口。这里使用独立 Git 历史，不包含私有素材、角色图、真实提示词、项目配置、旧 Git 历史或生成结果。
 
 ## 新会话从这里开始
