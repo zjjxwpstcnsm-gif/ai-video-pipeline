@@ -384,7 +384,8 @@ def main():
     if stage in ('preflight', 'videos') or (stage == 'images' and config.get('image_provider', 'imagegen') != 'imagegen'):
         if not os.environ.get('AGNES_API_KEY'):
             raise Stop('MISSING_AGNES_API_KEY')
-        provider = Provider(store, call, os.environ['AGNES_API_KEY'])
+        provider = Provider(store, call, os.environ['AGNES_API_KEY'],
+                            retry_policy=config.get('retry_policy'))
     if stage == 'preflight':
         auth = store.state.setdefault('auth_check', {})
         provider.read(auth, API + '/v1/models')

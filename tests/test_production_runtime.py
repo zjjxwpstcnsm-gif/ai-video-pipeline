@@ -103,6 +103,41 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         self.assertIn('error', record['error_response'])
 
+    def test_opted_in_503_recovery_preserves_uncertainty_and_spacing(self):
+        record = self.record()
+        p = self.provider([Stop('HTTP_503', status=503), {'video_id': 'recovered'}])
+        p.retry_policy = {'retry_http_5xx': True, 'authorization': 'bounded retries requested'}
+        self.assertEqual(p.submit(record, 'unused', {})['video_id'], 'recovered')
+        self.assertEqual(record['submission_history'][0]['acceptance'], 'unknown')
+        self.assertTrue(record['duplicate_possible'])
+        self.assertGreaterEqual(self.calls[1][0] - self.calls[0][0], 65)
+        self.assertEqual(record['submit_attempts'], 2)
+
+    def test_legacy_503_recovery_counts_old_attempt_and_survives_restart(self):
+        record = self.record()
+        record.update(status='outcome_unknown', error_code='HTTP_503')
+        policy = {'retry_http_5xx': True, 'authorization': 'bounded retries requested'}
+        p = self.provider([Stop('HTTP_503', status=503)] * 3)
+        p.retry_policy = policy
+        with self.assertRaisesRegex(Stop, 'SUBMIT_RETRY_EXHAUSTED'):
+            p.submit(record, 'unused', {})
+        p2 = self.provider([])
+        p2.retry_policy = policy
+        with self.assertRaisesRegex(Stop, 'SUBMIT_RETRY_EXHAUSTED'):
+            p2.submit(record, 'unused', {})
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(len(record['submission_history']), 4)
+        self.assertEqual(record['submit_attempts'], 4)
+
+    def test_http_recovery_policy_never_retries_timeout_or_known_task(self):
+        p = self.provider([])
+        p.retry_policy = {'retry_http_5xx': True, 'authorization': 'bounded retries requested'}
+        for extra in ({'error_code': 'TRANSPORT_OR_RESPONSE'},
+                      {'error_code': 'HTTP_503', 'video_id': 'known'}):
+            record = {'status': 'outcome_unknown', **extra}
+            self.assertFalse(p.recover_http_failure(record))
+        self.assertEqual(self.calls, [])
+
     def test_transport_timeout_is_unknown(self):
         record = self.record()
         with self.assertRaises(Stop): self.provider([Stop('TRANSPORT_OR_RESPONSE')]).submit(record, 'unused', {})

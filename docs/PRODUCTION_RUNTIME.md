@@ -24,7 +24,8 @@ Only the explicitly selected private request is processed. Its configured shot l
 |---|---|
 | POST 429 | Up to four total attempts across resumes; Retry-After seconds/date, exponential delay 65/130/260 seconds plus 0–5s jitter; shared account cooldown |
 | POST 400/401/402/403 or other 4xx except 429 | Persist rejected; no automatic retry |
-| POST 5xx, timeout, transport/non-JSON uncertainty | Persist outcome_unknown; no blind POST retry; response task ID permits polling |
+| POST 502/503/504 without task ID | Default outcome_unknown. With private retry_policy.retry_http_5xx=true and recorded authorization, archive unknown acceptance and allow up to 4 total attempts with 65/130/260s backoff plus jitter; duplicate_possible remains true. Counters survive restarts; legacy attempt counts as one. |
+| Other POST 5xx, timeout, transport/non-JSON uncertainty | Persist outcome_unknown; reconcile before retry; response task ID permits polling |
 | Success response parsing | Persist private response before extracting video_id; task id and video_id are not assumed interchangeable |
 | GET 408/429/500/502/503/504 or transport | At most five consecutive attempts across restarts, bounded exponential backoff, queue and deadline; success resets consecutive errors |
 | Media GET temporary error | Four attempts per invocation; Retry-After honored; defer if wait exceeds 300s; never create new generation to recover a download |
@@ -40,3 +41,5 @@ The old `/v1/videos` GET history probe returned 404. `reconcile` now records `pr
 Queue data, prompts, response bodies, task IDs, source URLs and delivery URLs are private. Public logs expose codes only. One-off media use private draft Release assets; source Git contains only small state documents and configuration. Existing source/blob identities and uncertain production records are not rewritten by this change.
 
 Run `PYTHONPATH=src python3 -m unittest discover -s tests -v` and `python3 scripts/public_boundary.py` after staging reviewed files. Tests use fake clocks, fake GitHub CAS and fake provider responses, covering routing, FIFO expiry/conflicts, cross-worker throttling, 429 backoff/exhaustion, 503 uncertainty, task-ID recovery, permanent rejection and GET retries. They do not invoke generation or establish artistic quality.
+
+HTTP recovery is opt-in at-least-once delivery, not idempotency. Never delete an unknown attempt to reset the budget. A known video_id always takes precedence over resubmission. The reconcile stage remains a manual-evidence stage; select videos with the authorized retry_policy to recover a recorded HTTP 502/503/504.

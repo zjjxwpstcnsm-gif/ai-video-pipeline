@@ -111,13 +111,14 @@ class AccountQueue:
 
 
 class Provider:
-    max_submit_attempts = 4  # initial request + at most 3 explicit-429 retries
+    max_submit_attempts = 4  # initial request + at most 3 bounded retries
     max_read_attempts = 5
 
-    def __init__(self, store, request, token, clock=time.time, sleep=time.sleep, jitter=None):
+    def __init__(self, store, request, token, clock=time.time, sleep=time.sleep, jitter=None, retry_policy=None):
         self.store, self.request, self.token = store, request, token
         self.clock, self.sleep = clock, sleep
         self.jitter = jitter or (lambda: random.uniform(0, 5))
+        self.retry_policy = retry_policy or {}
         self.queue = AccountQueue(store, clock, sleep)
         self.deadline = self.clock() + 45 * 60
 
@@ -132,10 +133,38 @@ class Provider:
             # Keep the active lease on storage failure; never resend the API call.
             print('ACCOUNT_QUEUE: lease_release_deferred', flush=True)
 
+    def recover_http_failure(self, record):
+        """Opt-in at-least-once recovery; preserve uncertainty, never claim dedupe."""
+        if (record.get('status') != 'outcome_unknown'
+                or record.get('video_id') or record.get('create_response') is not None
+                or record.get('error_code') not in ('HTTP_502', 'HTTP_503', 'HTTP_504')
+                or self.retry_policy.get('retry_http_5xx') is not True
+                or not self.retry_policy.get('authorization')):
+            return False
+        # Legacy records predate the counter but contain one attempted POST.
+        record['submit_attempts'] = max(1, record.get('submit_attempts', 0))
+        history = record.setdefault('submission_history', [])
+        if not history or history[-1]['attempt'] != record['submit_attempts']:
+            history.append({'attempt': record['submit_attempts'],
+                'attempted_at': record.get('attempted_at'),
+                'error_code': record['error_code'],
+                'error_response': record.get('error_response'),
+                'acceptance': 'unknown'})
+        record['recovery_policy'] = dict(self.retry_policy)
+        if record['submit_attempts'] >= self.max_submit_attempts:
+            self.store.save()
+            raise Stop('SUBMIT_RETRY_EXHAUSTED')
+        error = Stop(record['error_code'], retry_after=record.get('retry_after'))
+        record.update(status='retry_wait', duplicate_possible=True,
+                      next_attempt_at=self.clock() + self.backoff(error, record['submit_attempts']))
+        self.store.save()
+        return True
+
     def submit(self, record, url, payload, timeout=90):
         if record.get('create_response') is not None:
             return record['create_response']
-        if record['status'] not in ('queued', 'rate_limited'):
+        self.recover_http_failure(record)
+        if record['status'] not in ('queued', 'rate_limited', 'retry_wait'):
             raise Stop('UNRESOLVED_OR_REJECTED_SUBMISSION')
         while record.get('submit_attempts', 0) < self.max_submit_attempts:
             if self.clock() + timeout + 120 >= self.deadline:
@@ -172,10 +201,12 @@ class Provider:
                     self.queue.defer(record['next_attempt_at'])
                     self.release(ticket)
                     continue
-                # Even HTTP 503 can follow acceptance. Never guess POST idempotency.
+                # HTTP 5xx can follow acceptance; recovery must retain that uncertainty.
                 record['status'] = 'rejected' if error.status and 400 <= error.status < 500 else 'outcome_unknown'
                 self.store.save()
                 self.release(ticket)
+                if self.recover_http_failure(record):
+                    continue
                 raise
             record.update(create_response=result, status='response_received')
             self.store.save()  # preserve response BEFORE parsing task identifiers
