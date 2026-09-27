@@ -1,133 +1,76 @@
 # AI Video Pipeline
 
-## 当前生产接续（2026-09-27）
+公开的通用视频执行代码。私有素材、真实提示词、项目参数、任务 ID 和成品留在已配置的私有来源；公开源码不包含旧私有 Git 历史或生产媒体。
 
-已接入 `Produce private media`（`.github/workflows/produce.yml`）与通用 `scripts/produce.py`。它读取公开 `requests/current.txt` 中的稳定任务 ID 和可选调用 ID（均为无敏感含义的 32 位十六进制串），在私有仓库默认分支解析对应 JSON 请求。公开触发文件不包含创作内容。
+## 新会话入口
 
-- Environment 沿用 `private-assets`；`ASSETS_PAT` 保持只读，新增 `RESULTS_PAT` 仅授权目标私有仓库 Contents 读写。
-- 私有 JSON 检查点逐阶段持久化，生成前验证写入和读回。一次性媒体保存到该私有仓库的 draft Release，不写入源码 Git，不使用公共 Artifact。
-- 仅可信 main、仓库所有者和获保护的 Environment 可执行；私有输入不作为代码运行。公开日志仅输出安全状态码。
-- 已实际通过私有检查点写入读回、私有媒体上传下载、服务鉴权和一张关键帧生成回收：[运行证据](https://github.com/zjjxwpstcnsm-gif/ai-video-pipeline/actions/runs/36303164399)。
-- 视频试制提交返回 HTTP 503，未取得任务 ID：[失败运行](https://github.com/zjjxwpstcnsm-gif/ai-video-pipeline/actions/runs/36303296481)。只读任务列表探测返回 HTTP 404：[对账运行](https://github.com/zjjxwpstcnsm-gif/ai-video-pipeline/actions/runs/36303404046)。不能据此断言未受理，禁止自动重投；应先在提供方任务记录核对。
-- 当前没有已验收的视频片段或最终成片。剪辑与视觉验收尚未完成；该通用入口也不等于旧完整引擎已经迁移。
-- 接续时先读私有请求与 `.production-state/` 检查点。已完成图片直接回收；`submitting` / `outcome_unknown` 且无任务 ID 的记录必须先对账。
+先读 [AGENTS.md](AGENTS.md)、[完整项目指令](docs/AGENT_SYSTEM_INSTRUCTIONS.md)、[运行契约](docs/PRODUCTION_RUNTIME.md) 和实际工作流，再核对实时 HEAD、相关 run 和私有检查点。仓库文件不会自动修改 ChatGPT 项目设置；项目指令需复制到该设置中，新 Agent 则应主动读取这些文件。
 
-下文的“两工作流、只读检查”描述为此前迁移基线；最新生产入口与实测边界以上述状态及实际源码为准。
+**默认 imagegen 生图 → 关键帧审核与私有导入 → Agnes Video → 回收 → 剪辑 → 验收。** Agnes Image 是有证据的备选，不能因 Actions 内没有 imagegen 而自动使用。
 
-公开的通用视频工具与私有数据检查入口。这里使用独立 Git 历史，不包含私有素材、角色图、真实提示词、项目配置、旧 Git 历史或生成结果。
+## 实际能力与限制
 
-## 新会话从这里开始
+| 能力 | 当前状态 |
+|---|---|
+| 会话 imagegen 优先 | 默认 `images` 阶段准备私有提示词并标记 awaiting_imagegen；Agent 实际调用原生工具，Actions 不伪造该能力 |
+| imagegen 图像导入 | `import_images` 核对来源、传递授权、原图和视频输入 SHA-256，私有保存；视觉审核单独执行 |
+| Agnes 图片备选 | 必须明确选择并记录真实失败证据或用户指定；安全拒绝不允许切换 |
+| 私有检查点与媒体 | 已实测写入、读回、上传及下载；媒体保存私有 draft Release，小型状态存私有 JSON |
+| Agnes 视频提交与续查 | 已接入；此前一次实际 POST 返回 503，未获 video_id，仍需提供方对账，没有成片验收通过 |
+| RPM=1 调度 | 私有 CAS FIFO、租约、跨任务/运行共享冷却；默认所有 Agnes API 请求结束后至少间隔 65 秒 |
+| 故障恢复 | 429 有限重试；GET 暂时故障退避；POST 未知不重投；响应先持久化；详见运行契约 |
+| 剪辑与验收 | 现有本地 FFmpeg 拼接工具；生产执行器尚不自动完成剪辑/视觉验收，不等于完整旧引擎已迁移 |
 
-先读 [AGENTS.md](AGENTS.md) 与 [完整项目指令（可复制到 ChatGPT 项目设置）](docs/AGENT_SYSTEM_INSTRUCTIONS.md)，再检查实时 workflow、HEAD 和任务检查点。仓库文档不会自动修改 ChatGPT 的项目设置；用户可复制完整指令，新 Agent 应主动读取仓库入口。
+历史已生成图片保持原模型来源，不能改标 imagegen。未完成/结果未知的生产记录不会因优化代码被自动清空或重投。
 
-**执行原则：本地无密钥不等于 Actions 无密钥；没有 dispatch 工具不等于不能触发 Actions；鉴权成功不等于视频已交付。**
+## 工作流与秘密变量
 
-当前文档强化不新增生产工作流，实际迁移状态仍以下表与源码为准。
+- `Public pipeline CI`：main push / PR / 手动验证公开边界、离线测试和合成媒体 FFmpeg 冒烟测试；不读取私有素材或密钥。
+- `Check private metadata syntax`：所有者在默认分支手动执行私有 YAML/JSON 语法检查，不调用生成 API。
+- `Produce private media`：仅受信任 main 的专用 `requests/current.txt` 变动或手动调用可启动；受所有者校验和 `private-assets` Environment 保护。普通代码/文档提交不会触发生产。
 
-## 当前能力与迁移边界
+`requests/current.txt` 仅含稳定任务 ID 和可选本次调用 ID，均为 32 位十六进制无敏感串。实际请求在私有默认分支解析。请求阶段、镜头选择和检查点必须先准备好，不能通过反复空提交碰运气。生成成功以实际 Provider 与产物证据为准，CI 绿色或模型目录 200 不能代替。
 
-**配置连通已验证：私有仓库读取与 Agnes 只读鉴权均已通过 Actions 实测。完整视频生产迁移尚未完成。**
+Environment `private-assets`：
 
-不要以本地容器缺少 `AGNES_API_KEY` 推断 GitHub Actions 未配置密钥；两个运行环境相互独立。当前验证范围、运行证据与后续入口见下文。
+| Secret | 用途与权限 |
+|---|---|
+| ASSETS_REPOSITORY | 已授权私有来源的 owner/repository |
+| ASSETS_PAT | 该私有仓库 Contents 只读 |
+| RESULTS_PAT | 仅目标私有仓库 Contents 读写，用于检查点及私有媒体回收 |
+| AGNES_API_KEY | Agnes 服务鉴权，仅注入获授权 job |
 
-| 已提供 | 尚未迁移／尚未验收 |
-| --- | --- |
-| 通用 Shot / YAML 读取、连续性字段检查 | 原有完整项目验证规则、角色解析、MV 与合成引擎 |
-| 本地 FFmpeg 无损拼接 | 图像／视频 Provider、提交、轮询、人工审核与续作 |
-| 公开 CI、合成数据测试、真实 FFmpeg 冒烟测试 | 私有成品／检查点存储与恢复 |
-| 仅所有者手动触发的私有 YAML/JSON 语法检查，跨仓读取已实测通过 | 完整项目规则与媒体内容验收 |
-| Actions 中三个 Secret 可用、Agnes 模型目录鉴权已实测通过 | 图像／视频生成端点、额度、生成结果与成片验收 |
+不导出上述凭证到聊天或当前容器，不改变 Environment 审批，不把私有结果放入公共 Artifact。旧私有工作流或外部客户端若直连同一密钥，不得与新队列并行运行；队列只能约束接入它的调用者。
 
-旧私有仓库仍是生产与素材的权威来源，旧代码和工作流保留，不删除、不停用、不改公开。
-本项目的 `ai_video.metadata` 是新增的有限语法检查器，**不等价于旧 `validate_project.py --all --metadata-only`**；不会验证全部生产约束、图片/音频内容或生成效果。
-不要把普通 CI 绿色当作私有生产流程已经验收。
+## 接续和重试
 
-## 已验证状态与证据（2026-09-27）
+1. 查私有请求与检查点；已完成图片/片段优先回收，已知任务 ID 优先轮询。
+2. 默认原生生图；人工或 Agent 完成图片视觉检查后，记录真实来源和批准镜头。未导入的图片不能进入视频提交。
+3. 同账户所有接入调用共享持久限流。HTTP 429 至多首次加 3 次重试；GET 暂时错误至多连续 5 次；计数、退避和下一次时间持久保存。
+4. POST 503、超时、断连或无任务 ID 的不确定响应不能盲重试。提供方明确未创建或已验证幂等后才可重投；未知状态不因租约过期而清除。
+5. 本工作流处理显式选中的请求，不是无限后台调度器。GitHub 可能替换 pending concurrency job，需从私有未完成任务续作；不能仅依赖触发事件保存任务。
+6. 下载完成不等于可发布：仍需完整解码、镜头/切点审查与可用时的正常速度播放。
 
-以下结论来自实际 Actions job、步骤结果与脱敏日志，不是仅根据设置页面或普通 CI 推断。
+运行证据：
+- [私有回收、鉴权及单张 Agnes 关键帧成功](https://github.com/zjjxwpstcnsm-gif/ai-video-pipeline/actions/runs/36303164399)
+- [视频提交 HTTP 503](https://github.com/zjjxwpstcnsm-gif/ai-video-pipeline/actions/runs/36303296481)
+- [历史查询探测 HTTP 404](https://github.com/zjjxwpstcnsm-gif/ai-video-pipeline/actions/runs/36303404046)：该端点未获支持，现已移除自动探测，不以 404 证明任务未创建。
 
-| 检查项 | 实测结果 | 范围 |
-| --- | --- | --- |
-| `ASSETS_REPOSITORY`、`ASSETS_PAT`、`AGNES_API_KEY` | 均为 available | 验证任务能够取得三个 Secret，未输出其值 |
-| 跨仓读取 | 私有元数据语法检查成功 | 检查目标仍为 private，读取 YAML/JSON 并运行公开检查器 |
-| Agnes 只读鉴权 | 无效凭证 HTTP 401；配置密钥 HTTP 200；`AGNES_AUTH_RESULT: verified` | 仅 GET `/v1/models`，没有提交图像或视频生成 |
-| 公开 CI | success | 公开边界、离线测试及合成媒体 FFmpeg 冒烟测试 |
+本次队列与路由优化仅做模拟故障测试，不触发新的图像或视频生成，也不把旧 HTTP 503 声称为已修复。
 
-- [配置、跨仓读取与 Agnes 鉴权验证](https://github.com/zjjxwpstcnsm-gif/ai-video-pipeline/actions/runs/36299930846)，验证源码：`f9143a29157f8ec8ebbc18f862cc511ce40d760e`，job：`108565585776`。
-- [恢复手动检查后的公开 CI](https://github.com/zjjxwpstcnsm-gif/ai-video-pipeline/actions/runs/36299994027)，源码：`295d3f86c37662594f358eb53975795d6d0e4fe7`。
-
-这是上述运行时点的验证记录，不保证凭证未来不会过期或被撤销，也不证明 Environment 分支／审批保护的全部管理员设置已经审计。
-一次性验证曾使用受限的 push 触发；验证后已恢复为仅 `workflow_dispatch`。当前 `private-check.yml` 只执行私有元数据检查，不再包含一次性 Secret 可用性与 Agnes 鉴权探测。因此，重新运行当前检查不会再次验证 Agnes。
-
-## 本地使用
-
-使用独立虚拟环境，避免与旧版同名 `ai_video` Python 包混装：
+## 本地验证
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 pip install .
 python -m unittest discover -s tests -v
+python scripts/public_boundary.py
 python scripts/concat_video.py /local/output.mp4 /local/part-1.mp4 /local/part-2.mp4
-python -I -m ai_video.metadata /local/private-workspace
 ```
 
-拼接需要系统安装 FFmpeg，输入视频的编码与流参数须兼容；它不是自动转码或完整剪辑器。
-Shot/YAML 读取工具兼容首批原接口，仅用于本地可信配置。媒体测试只使用 FFmpeg 生成的合成片段，不使用角色素材，也不调用生成 API。
-
-## GitHub Actions
-
-`Public pipeline CI` 在 main push / PR / 手动触发时验证公开文件边界、安装公开包、运行测试和 FFmpeg 冒烟测试。没有私有 Secret，没有私有素材 checkout，没有公共 Artifact。
-
-`Check private metadata syntax` 只允许仓库所有者从默认分支手动触发及重跑。它先确认数据仓库仍 private，再通过临时只读凭证 sparse checkout YAML/JSON。只运行已安装的公开检查器，不执行私有 Python、Shell、工作流或安装脚本，不打印私有文件名、配置内容和详细异常，不上传 Artifact、不共享缓存、不回写素材仓库。
-
-### 首次配置与已有配置复用
-
-在本仓库 Settings → Environments 创建 `private-assets`，限制仅默认分支部署，并设置可用的审批保护。工作流中的 owner / default-branch 检查已经提交；Environment 保护需要仓库管理员实际设置，不能只写在文档里。
-
-本仓库已有上述成功验证记录；继续使用时先核对运行证据，无需因本地缺少变量而重复索取密钥。新部署时在该 Environment 配置：
-
-| 名称 | 值 |
-| --- | --- |
-| `ASSETS_REPOSITORY` | 你的私有数据仓库，格式为 `owner/repository` |
-| `ASSETS_PAT` | Fine-grained PAT：只选该私有仓库，Contents: Read-only，设置到期日 |
-| `AGNES_API_KEY` | Agnes 服务凭证；已用于一次性只读鉴权验证，当前元数据检查不引用它 |
-
-不要把 PAT 发到聊天、写进代码、workflow 输入或公开 Issue。公开仓库的默认 GITHUB_TOKEN 不负责跨私有仓库授权。
-配置完成后，Actions → **Check private metadata syntax** → **Run workflow**，选择 main。
-没有 Secret 时会明确失败，不会退回匿名访问、不扩大权限，也不会调用真实生成服务。
-
-### Agent 接续与视频执行入口
-
-1. 先读取默认分支工作流和最近的对应 Actions job，分别判断 Secret 可用、跨仓访问、服务鉴权、生成成功和最终成片验收；不要把它们合并成一个“已通／未通”。
-2. GitHub Environment secrets 只提供给获授权且显式引用它们的 Actions job，不会自动注入聊天工具或本地容器。不要要求用户把密钥贴到聊天，也不要尝试导出密钥供本地运行。
-3. 当前公开仓库只有 `Public pipeline CI` 与 `Check private metadata syntax` 两个工作流，没有“生成视频”入口；配置凭证不会自动增加 Provider、轮询或剪辑能力。
-4. 制作任务应继续检查旧私有仓库中现有的生产入口及可执行性；若要迁移到公开 Actions，先接入经过审查的通用生成代码、任务 ID 续查、私有输入与私有结果存储，再实际完成一次生成与成片验收。不能仅修改 README 宣称生产已完成。
-5. 后续生成任务通过对应 job 的环境变量引用 `AGNES_API_KEY`。不得把私有提示词、素材路径、临时素材 URL、API 响应正文或产物放进公开日志、公共 Artifact 或公开仓库。
-
-### 没有手动触发工具时如何继续
-
-先核查实际 workflow 的 `on`、分支、`paths`、job 条件和 Environment。当前 `ci.yml` 的 main push 可触发普通 CI；`private-check.yml` 只有 `workflow_dispatch`，不能靠任意 push 触发，也不负责生产。
-
-生产任务授权内，可接入受限 `on: push` 入口：限定受信任默认分支与专用任务文件，保留身份校验及 Environment 审批，使用无敏感含义的请求 ID 在私有环境解析任务。不将私有提示词或素材地址提交到公开触发文件，不让 README 更新自动生成视频。
-
-提交后确认对应 HEAD 的真实 run；没有 run 时排查过滤条件、事件来源、权限和配置。由 `GITHUB_TOKEN` 发起的 push 通常不会递归触发新工作流，不应假定任何提交必定触发。连接器缺少 dispatch 方法时，不能直接据此要求用户改用浏览器或停止。
-
-### 生产闭环与续作要求
-
-1. 生成前核实私有输入读取、服务入口、私有结果回收及持久检查点均可用；缺失的通用实现应在任务范围内接入。
-2. 每镜提交后保存 Provider task ID 和输入版本；重跑先续查，使用幂等策略避免重复生成和费用。检查点不能只存 runner 临时磁盘。
-3. 失败定位到 run/job/step；区分排队/审批、配置、权限、额度、参数和服务故障。有限重试，不重复空提交。
-4. 回收片段、剪辑后做技术与视觉验收，再交付可播放 MP4。实际验证到哪一步就报告到哪一步。
-5. 接续记录的通用格式为：任务标识、源码版本、阶段、运行证据、镜头状态、下一动作；包含 Provider task ID、素材位置或实际参数的记录仅存私有环境。
-
-### 生产切换条件
-
-需要继续迁移并审查完整通用引擎，实际通过完整元数据规则与生产回归，再实现私有结果存储和检查点恢复，最后才切换旧生产入口。
-只读 ASSETS_PAT 不能回写成品；需要另行配置最小权限的私有存储授权，不能默认扩大它的权限。
+拼接要求 FFmpeg，输入编码/流参数须兼容。`ai_video.metadata` 仅检查私有 YAML/JSON 基础语法，不等于旧完整项目验证器。测试使用合成媒体、假时钟、模拟 CAS 和 Provider 响应，不调用真实生成。
 
 ## 公开边界
 
-`scripts/public_boundary.py` 使用精确文件白名单，并检测基本的凭证、嵌入媒体、二进制和异常源码。它不是完备的隐私证明：每次新增公开文件仍需审核。不要把 assets、projects、创作配方、输出或 .git 历史加入本库。
-
-所有 Actions 依赖使用已核验的固定 commit。公开标准 runner 的免费计算不代表外部生成 API、存储、较大 runner 或任意工作负载免费；本项目不豁免 GitHub 的使用条款。
+`scripts/public_boundary.py` 使用精确路径白名单并扫描基本凭证、嵌入媒体和异常源码；新增公开文件须人工审查，不放宽通配。不要把 assets、projects、outputs、实际创作配方或私有历史加入公开仓库。工作流依赖固定到已核验 commit。外部 API 和存储费用不因公开 Actions 免费运行而自动免费。

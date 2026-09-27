@@ -10,7 +10,8 @@ from pathlib import Path, PurePosixPath
 
 ALLOWED = frozenset('''README.md AGENTS.md docs/AGENT_SYSTEM_INSTRUCTIONS.md pyproject.toml .gitignore
 .github/workflows/ci.yml .github/workflows/private-check.yml .github/workflows/produce.yml
-scripts/produce.py requests/current.txt
+scripts/produce.py scripts/production_runtime.py requests/current.txt
+tests/test_production_runtime.py docs/PRODUCTION_RUNTIME.md
 scripts/public_boundary.py scripts/private_check.py scripts/concat_video.py
 src/ai_video/__init__.py src/ai_video/metadata.py
 src/ai_video/director/__init__.py src/ai_video/director/project.py
