@@ -255,9 +255,10 @@ def make_video(store, config, shot, key):
 
 
 def main():
-    rid = Path('requests/current.txt').read_text().strip()
-    if not re.fullmatch(r'[a-f0-9]{32}', rid):
+    ids = Path('requests/current.txt').read_text().split()
+    if not 1 <= len(ids) <= 2 or any(not re.fullmatch(r'[a-f0-9]{32}', value) for value in ids):
         raise Stop('INVALID_REQUEST_ID')
+    rid = ids[0]
     for name in ('ASSETS_REPOSITORY', 'ASSETS_PAT', 'RESULTS_PAT', 'AGNES_API_KEY'):
         if not os.environ.get(name):
             raise Stop('MISSING_' + name)
